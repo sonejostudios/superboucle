@@ -615,7 +615,7 @@
         <rect>
          <x>10</x>
          <y>30</y>
-         <width>141</width>
+         <width>145</width>
          <height>31</height>
         </rect>
        </property>
@@ -659,7 +659,7 @@
         <rect>
          <x>10</x>
          <y>30</y>
-         <width>141</width>
+         <width>145</width>
          <height>31</height>
         </rect>
        </property>
@@ -703,7 +703,7 @@
         <rect>
          <x>10</x>
          <y>30</y>
-         <width>141</width>
+         <width>145</width>
          <height>31</height>
         </rect>
        </property>
@@ -747,7 +747,7 @@
         <rect>
          <x>10</x>
          <y>30</y>
-         <width>141</width>
+         <width>145</width>
          <height>31</height>
         </rect>
        </property>
@@ -854,7 +854,7 @@ example:
         <rect>
          <x>10</x>
          <y>30</y>
-         <width>141</width>
+         <width>145</width>
          <height>31</height>
         </rect>
        </property>
@@ -898,7 +898,7 @@ example:
         <rect>
          <x>10</x>
          <y>30</y>
-         <width>141</width>
+         <width>145</width>
          <height>31</height>
         </rect>
        </property>
@@ -942,7 +942,7 @@ example:
         <rect>
          <x>10</x>
          <y>30</y>
-         <width>141</width>
+         <width>145</width>
          <height>31</height>
         </rect>
        </property>
@@ -963,6 +963,19 @@ example:
         </item>
        </layout>
       </widget>
+     </widget>
+     <widget class="QCheckBox" name="softblinkCBox">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>220</y>
+        <width>171</width>
+        <height>21</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Use Software Blinking</string>
+      </property>
      </widget>
     </widget>
    </item>

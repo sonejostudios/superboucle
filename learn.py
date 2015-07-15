@@ -36,6 +36,7 @@ class LearnDialog(QDialog, Ui_Dialog):
                  'A', 'A#',
                  'B']
 
+
     # send_midi_to values :
     START_STOP = 0
     MASTER_VOLUME_CTRL = 1
@@ -250,6 +251,12 @@ class LearnDialog(QDialog, Ui_Dialog):
             (msg_type, channel, pitch, velocity) = btn_key
             note = ((self.NOTEON << 4) + channel, pitch, color)
             self.gui.queue_out.put(note)
+
+
+    #def onCheckSoftBlink(self):
+       # self.soft_blink = self.softblinkCBox.isChecked()
+
+
 
     def update(self):
         try:
