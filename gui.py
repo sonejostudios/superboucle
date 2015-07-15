@@ -4,20 +4,20 @@
 """
 Gui
 """
-from PyQt5.QtWidgets import (QMainWindow, QFileDialog,
+from PyQt5.QtWidgets import (QWidget, QMainWindow, QFileDialog,
                              QAction, QActionGroup, QMessageBox, QApplication)
 from PyQt5.QtCore import QTimer, QObject, pyqtSignal, QSettings, Qt
 
-from clip import Clip, load_song_from_file, verify_ext, Song
+from clip import Clip, load_song_from_file, verify_ext, basename
 from gui_ui import Ui_MainWindow
-from cell import Cell
+from cell_ui import Ui_Cell
 from learn import LearnDialog
 from manage import ManageDialog
 from playlist import PlaylistDialog, getSongs
 from port_manager import PortManager
 from new_song import NewSongDialog
 from add_clip import AddClipDialog
-from add_port import AddPortDialog
+from threading import Event
 from device import Device
 import struct
 from queue import Queue, Empty
@@ -30,6 +30,121 @@ BAR_START_TICK = 0.0
 BEATS_PER_BAR = 4.0
 BEAT_TYPE = 4.0
 TICKS_PER_BEAT = 960.0
+
+
+def frame2bbt(frame, ticks_per_beat, beats_per_minute, frame_rate):
+    ticks_per_second = (beats_per_minute * ticks_per_beat) / 60
+    return (ticks_per_second * frame) / frame_rate
+
+
+def pos2str(pos):
+    return """Position :
+        Unique 1 : %s
+        Usecs : %s
+        frame rate : %s
+        frame : %s
+        valid : %s
+        bar : %s
+        beat : %s
+        tick : %s
+        bar_start_tick : %s
+        beats_per_bar : %s
+        beat_type : %s
+        ticks_per_beat : %s
+        beats_per_minute : %s
+        frame_time : %s
+        next_time : %s
+        bbt_offset : %s
+        audio_frames_per_video_frame : %s
+        video_offset : %s
+        unique_2 : %s
+    """ % (pos.unique_1,
+           pos.usecs,
+           pos.frame_rate,
+           pos.frame,
+           pos.valid,
+           pos.bar,
+           pos.beat,
+           pos.tick,
+           pos.bar_start_tick,
+           pos.beats_per_bar,
+           pos.beat_type,
+           pos.ticks_per_beat,
+           pos.beats_per_minute,
+           pos.frame_time,
+           pos.next_time,
+           pos.bbt_offset,
+           pos.audio_frames_per_video_frame,
+           pos.video_offset,
+           pos.unique_2)
+
+
+class Cell(QWidget, Ui_Cell):
+    def __init__(self, parent, clip, x, y):
+        super(Cell, self).__init__(parent)
+
+        self.gui = parent
+        self.pos_x, self.pos_y = x, y
+        self.clip = clip
+        self.blink, self.color = False, None
+        self.setupUi(self)
+        self.setStyleSheet(Gui.DEFAULT)
+        self.setAcceptDrops(True)
+        if clip:
+            self.clip_name.setText(clip.name)
+            self.start_stop.clicked.connect(parent.onStartStopClicked)
+            self.edit.clicked.connect(parent.onEdit)
+        else:
+            self.start_stop.setEnabled(False)
+            self.clip_position.setEnabled(False)
+            self.edit.setText("Add Clip...")
+            self.edit.clicked.connect(parent.onAddClipClicked)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if len(urls):
+            path = urls[0].path()
+            self.setClip(self.getClip(path))
+
+    def setClip(self, new_clip):
+        self.clip = new_clip
+        self.clip_name.setText(new_clip.name)
+        self.start_stop.clicked.connect(self.gui.onStartStopClicked)
+        self.edit.setText("Edit")
+        self.edit.clicked.disconnect(self.gui.onAddClipClicked)
+        self.edit.clicked.connect(self.gui.onEdit)
+        self.start_stop.setEnabled(True)
+        self.clip_position.setEnabled(True)
+        self.setAcceptDrops(False)
+        self.gui.song.addClip(new_clip, self.pos_x, self.pos_y)
+        self.gui.updatePorts.emit()
+        self.gui.update()
+
+    def openClip(self):
+        audio_file, a = self.gui.getOpenFileName('Open Clip',
+                                                 'All files (*.*)', self)
+        if audio_file and a:
+            return self.getClip(audio_file)
+
+    def getClip(self, audio_file):
+        wav_id = basename(audio_file)
+        if wav_id in self.gui.song.data:
+            i = 0
+            while "%s-%02d" % (wav_id, i) in self.gui.song.data:
+                i += 1
+            wav_id = "%s-%02d" % (wav_id, i)
+
+        data, samplerate = sf.read(audio_file, dtype=np.float32)
+        self.gui.song.data[wav_id] = data
+        self.gui.song.samplerate[wav_id] = samplerate
+
+        return Clip(basename(wav_id))
 
 
 class Gui(QMainWindow, Ui_MainWindow):
@@ -74,8 +189,6 @@ class Gui(QMainWindow, Ui_MainWindow):
     BLINK_DURATION = 200
     PROGRESS_PERIOD = 300
 
-    ADD_PORT_LABEL = 'Add new Port...'
-
     updateUi = pyqtSignal()
     readQueueIn = pyqtSignal()
     updatePorts = pyqtSignal()
@@ -91,33 +204,36 @@ class Gui(QMainWindow, Ui_MainWindow):
         self.updateUi.connect(self.update)
         self.readQueueIn.connect(self.readQueue)
         self.current_vol_block = 0
-        self.last_clip = None
+
+        self.ports_initialised = Event()
+        self.ports_initialised.clear()
 
         # Load devices
         self.deviceGroup = QActionGroup(self.menuDevice)
         self.devices = []
-        device_settings = QSettings('superboucle', 'devices')
-        if ((device_settings.contains('devices')
-             and device_settings.value('devices'))):
-            for raw_device in device_settings.value('devices'):
+        settings = QSettings('superboucle', 'devices')
+        if settings.contains('devices') and settings.value('devices'):
+            for raw_device in settings.value('devices'):
                 self.devices.append(Device(pickle.loads(raw_device)))
         else:
             self.devices.append(Device({'name': 'No Device', }))
         self.updateDevices()
         self.deviceGroup.triggered.connect(self.onDeviceSelect)
 
+        # TODO: find a nicer way to store settings - discussion desirable.
         # Load playlist
         self.settings = QSettings('superboucle', 'session')
-        # Qsetting appear to serialize empty lists as @QInvalid
-        # which is then read as None :(
+        # Qsetting appear to serialize empty lists as @QInvalid which is then read as None :(
         self.playlist = getSongs(self.settings.value('playlist', []) or [])
         self.paths_used = self.settings.value('paths_used', {})
 
         self.auto_connect = self.settings.value('auto_connect',
                                                 'true') == "true"
 
+
         # Load song
-        self.port_by_name = {}
+        self.output_ports_by_name = {}
+        self.port_names_by_output = {}
         self.initUI(song)
 
         self.actionNew.triggered.connect(self.onActionNew)
@@ -140,7 +256,8 @@ class Gui(QMainWindow, Ui_MainWindow):
         self.clip_name.textChanged.connect(self.onClipNameChange)
         self.clip_volume.valueChanged.connect(self.onClipVolumeChange)
         self.beat_diviser.valueChanged.connect(self.onBeatDiviserChange)
-        self.output.activated.connect(self.onOutputChange)
+        self.output.activated.connect(
+            self.onOutputChange)  # currentIndexChanged
         self.mute_group.valueChanged.connect(self.onMuteGroupChange)
         self.frame_offset.valueChanged.connect(self.onFrameOffsetChange)
         self.beat_offset.valueChanged.connect(self.onBeatOffsetChange)
@@ -159,6 +276,8 @@ class Gui(QMainWindow, Ui_MainWindow):
         self.disptimer.timeout.connect(self.updateProgress)
 
         self._jack_client.set_timebase_callback(self.timebase_callback)
+
+        self.updatePorts.connect(self.updatePortEvent)
         self.show()
 
     def initUI(self, song):
@@ -173,16 +292,11 @@ class Gui(QMainWindow, Ui_MainWindow):
             self.gridLayout.itemAt(i).widget().close()
             self.gridLayout.itemAt(i).widget().setParent(None)
 
-        # first pass without removing old ports
-        self.updateJackPorts(song, remove_ports=False)
+        self.ports_initialised.clear()
         self.song = song
-        # second pass with removing
-        self.updateJackPorts(song, remove_ports=True)
+        self.updatePorts.emit()
 
         self.frame_clip.setEnabled(False)
-        self.output.clear()
-        self.output.addItems(song.outputsPorts)
-        self.output.addItem(Gui.ADD_PORT_LABEL)
         self.master_volume.setValue(song.volume * 256)
         self.bpm.setValue(song.bpm)
         self.beat_per_bar.setValue(song.beat_per_bar)
@@ -199,11 +313,50 @@ class Gui(QMainWindow, Ui_MainWindow):
 
         self.update()
 
+    def updatePortEvent(self):
+
+        self.ports_initialised.clear()
+        client = self._jack_client
+        print("Outputs ports : ")
+        for port in client.outports:
+            print(port)
+
+        self.port_names_by_output = {o: list(self.song.channel_names(o)) for o
+                                     in self.song.outputs}
+
+        wanted_ports = set(
+            c for os in self.port_names_by_output.values() for c in os)
+
+        print("wanted ports:")
+        print(wanted_ports)
+
+        # remove unwanted ports
+        for port in [port for port in client.outports
+                     if port.shortname not in wanted_ports]:
+            port.unregister()
+
+        print("Outputs after removing unused ports: ")
+        for port in client.outports:
+            print(port)
+
+        # create new ports
+        current_ports = set(port.shortname for port in client.outports)
+        for new_port_name in wanted_ports - current_ports:
+            client.outports.register(new_port_name)
+
+        print("Outputs after adding new ports: ")
+        for port in client.outports:
+            print(port)
+
+        self.output_ports_by_name = {port.shortname: port for port in
+                                     client.outports}
+        print(self.output_ports_by_name)
+        self.ports_initialised.set()
+
     def closeEvent(self, event):
-        device_settings = QSettings('superboucle', 'devices')
-        device_settings.setValue('devices',
-                                 [pickle.dumps(x.mapping)
-                                  for x in self.devices])
+        settings = QSettings('superboucle', 'devices')
+        settings.setValue('devices',
+                          [pickle.dumps(x.mapping) for x in self.devices])
         self.settings.setValue('playlist',
                                [song.file_name for song in self.playlist])
         self.settings.setValue('paths_used', self.paths_used)
@@ -242,7 +395,10 @@ class Gui(QMainWindow, Ui_MainWindow):
             self.frame_offset.setValue(self.last_clip.frame_offset)
             self.beat_offset.setValue(self.last_clip.beat_offset)
             self.beat_diviser.setValue(self.last_clip.beat_diviser)
-            self.output.setCurrentText(self.last_clip.output)
+            ro, op = self.last_clip.output, list(self.song.outputs.keys())
+            self.output.clear()
+            self.output.insertItems(1, op)
+            self.output.setCurrentIndex(op.index(ro))
             self.mute_group.setValue(self.last_clip.mute_group)
             self.clip_volume.setValue(self.last_clip.volume * 256)
             state, position = self._jack_client.transport_query()
@@ -342,8 +498,8 @@ class Gui(QMainWindow, Ui_MainWindow):
 
     def onClipNameChange(self):
         self.last_clip.name = self.clip_name.text()
-        cell = self.btn_matrix[self.last_clip.x][self.last_clip.y]
-        cell.clip_name.setText(self.last_clip.name)
+        tframe = self.btn_matrix[self.last_clip.x][self.last_clip.y]
+        tframe.clip_name.setText(self.last_clip.name)
 
     def onClipVolumeChange(self):
         self.last_clip.volume = (self.clip_volume.value() / 256)
@@ -352,63 +508,8 @@ class Gui(QMainWindow, Ui_MainWindow):
         self.last_clip.beat_diviser = self.beat_diviser.value()
 
     def onOutputChange(self):
-        new_port = self.output.currentText()
-        if new_port == Gui.ADD_PORT_LABEL:
-            AddPortDialog(self)
-        else:
-            self.last_clip.output = new_port
-
-    def addPort(self, name):
-        self.song.outputsPorts.add(name)
-        self.updateJackPorts(self.song)
-        if self.output.findText(name) == -1:
-            self.output.insertItem(self.output.count() - 1, name)
-        if self.last_clip:
-            self.last_clip.output = name
-            self.output.setCurrentText(name)
-
-    def removePort(self, name):
-        if name != Clip.DEFAULT_OUTPUT:
-            self.song.outputsPorts.remove(name)
-            for c in self.song.clips:
-                if c.output == name:
-                    c.output = Clip.DEFAULT_OUTPUT
-            self.updateJackPorts(self.song)
-            self.output.removeItem(self.output.findText(name))
-            if self.last_clip:
-                self.output.setCurrentText(self.last_clip.output)
-
-    def updateJackPorts(self, song, remove_ports=True):
-        '''Update jack port based on clip output settings
-        update dict containing ports with shortname as key'''
-
-        current_ports = set()
-        for port in self._jack_client.outports:
-            current_ports.add(port.shortname)
-
-        wanted_ports = set()
-        for port_basename in song.outputsPorts:
-            for ch in Song.CHANNEL_NAMES:
-                port = Song.CHANNEL_NAME_PATTERN.format(port=port_basename,
-                                                        channel=ch)
-                wanted_ports.add(port)
-
-        # remove unwanted ports
-        if remove_ports:
-            port_to_remove = []
-            for port in self._jack_client.outports:
-                if port.shortname not in wanted_ports:
-                    current_ports.remove(port.shortname)
-                    port_to_remove.append(port)
-            for port in port_to_remove:
-                    port.unregister()
-
-        # create new ports
-        for new_port_name in wanted_ports - current_ports:
-            self._jack_client.outports.register(new_port_name)
-
-        self.port_by_name = {port.shortname: port
-                             for port in self._jack_client.outports}
+        self.last_clip.output = self.output.currentText()
+        self.updatePorts.emit()
 
     def onMuteGroupChange(self):
         self.last_clip.mute_group = self.mute_group.value()
@@ -496,7 +597,10 @@ class Gui(QMainWindow, Ui_MainWindow):
                     state = clp.state
                 if state != self.state_matrix[x][y]:
                     if clp:
-                        self.btn_matrix[x][y].setColor(state)
+                        self.setCellColor(x,
+                                          y,
+                                          self.STATE_COLORS[state],
+                                          self.STATE_BLINK[state])
                     try:
                         self.queue_out.put(self.device.generateNote(x,
                                                                     y,
@@ -521,18 +625,14 @@ class Gui(QMainWindow, Ui_MainWindow):
                     channel = status & 0xF
                     msg_type = status >> 4
                     self.processNote(msg_type, channel, pitch, vel)
-                # else:
-                # print("Invalid message length")
+                else:
+                    print("Invalid message length")
         except Empty:
             pass
 
     def processNote(self, msg_type, channel, pitch, vel):
 
-        btn_id = (msg_type,
-                  channel,
-                  pitch,
-                  vel)
-        btn_id_vel = (msg_type, channel, pitch, -1)
+        btn_key = (msg_type, channel, pitch, vel)
         ctrl_key = (msg_type, channel, pitch)
 
         # master volume
@@ -540,15 +640,15 @@ class Gui(QMainWindow, Ui_MainWindow):
             self.song.master_volume = vel / 127
             (self.master_volume
              .setValue(self.song.master_volume * 256))
-        elif self.device.play_btn in [btn_id, btn_id_vel]:
+        elif btn_key == self.device.play_btn:
             self._jack_client.transport_start()
-        elif self.device.pause_btn in [btn_id, btn_id_vel]:
+        elif btn_key == self.device.pause_btn:
             self._jack_client.transport_stop()
-        elif self.device.rewind_btn in [btn_id, btn_id_vel]:
+        elif btn_key == self.device.rewind_btn:
             self.onRewindClicked()
-        elif self.device.goto_btn in [btn_id, btn_id_vel]:
+        elif btn_key == self.device.goto_btn:
             self.onGotoClicked()
-        elif self.device.record_btn in [btn_id, btn_id_vel]:
+        elif btn_key == self.device.record_btn:
             self.onRecord()
         elif ctrl_key in self.device.ctrls:
             try:
@@ -558,18 +658,10 @@ class Gui(QMainWindow, Ui_MainWindow):
                         [self.current_vol_block])
                 if clip:
                     clip.volume = vel / 127
-                    if self.last_clip == clip:
-                        self.clip_volume.setValue(self.last_clip.volume * 256)
             except KeyError:
                 pass
-        elif (btn_id in self.device.block_buttons
-              or btn_id_vel in self.device.block_buttons):
-            try:
-                self.current_vol_block = (
-                    self.device.block_buttons.index(btn_id))
-            except ValueError:
-                self.current_vol_block = (
-                    self.device.block_buttons.index(btn_id_vel))
+        elif btn_key in self.device.block_buttons:
+            self.current_vol_block = self.device.block_buttons.index(btn_key)
             for i in range(len(self.device.block_buttons)):
                 (a, b_channel, b_pitch, b) = self.device.block_buttons[i]
                 if i == self.current_vol_block:
@@ -580,19 +672,19 @@ class Gui(QMainWindow, Ui_MainWindow):
                                     b_pitch,
                                     color))
         else:
-            x, y = -1, -1
             try:
-                x, y = self.device.getXY(btn_id)
+                x, y = self.device.getXY(btn_key)
+                if (x >= 0 and y >= 0):
+                    self.startStop(x, y)
             except IndexError:
                 pass
             except KeyError:
-                try:
-                    x, y = self.device.getXY(btn_id_vel)
-                except KeyError:
-                    pass
+                pass
 
-            if (x >= 0 and y >= 0):
-                self.startStop(x, y)
+    def setCellColor(self, x, y, color, blink=False):
+        self.btn_matrix[x][y].setStyleSheet(color)
+        self.btn_matrix[x][y].blink = blink
+        self.btn_matrix[x][y].color = color
 
     def toggleBlinkButton(self):
         for line in self.btn_matrix:
@@ -657,17 +749,16 @@ class Gui(QMainWindow, Ui_MainWindow):
             self.redraw()
 
     def timebase_callback(self, state, nframes, pos, new_pos):
-        if pos.frame_rate == 0:
-            return None
         pos.valid = 0x10
         pos.bar_start_tick = BAR_START_TICK
         pos.beats_per_bar = self.beat_per_bar.value()
         pos.beat_type = BEAT_TYPE
         pos.ticks_per_beat = TICKS_PER_BEAT
         pos.beats_per_minute = self.bpm.value()
-        ticks_per_second = (pos.beats_per_minute *
-                            pos.ticks_per_beat) / 60
-        ticks = (ticks_per_second * pos.frame) / pos.frame_rate
+        ticks = frame2bbt(pos.frame,
+                          pos.ticks_per_beat,
+                          pos.beats_per_minute,
+                          pos.frame_rate)
         (beats, pos.tick) = divmod(int(round(ticks, 0)),
                                    int(round(pos.ticks_per_beat, 0)))
         (bar, beat) = divmod(beats, int(round(pos.beats_per_bar, 0)))
