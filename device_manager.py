@@ -3,7 +3,7 @@ from device_manager_ui import Ui_Dialog
 from learn import LearnDialog
 from device import Device
 from clip import verify_ext
-import json
+from serializer import DeviceSerializer
 
 
 class ManageDialog(QDialog, Ui_Dialog):
@@ -40,9 +40,9 @@ class ManageDialog(QDialog, Ui_Dialog):
                                                 self)
         with open(file_name, 'r') as f:
             read_data = f.read()
-        mapping = json.loads(read_data)
-        self.list.addItem(mapping['name'])
-        self.gui.devices.append(Device(mapping))
+        device = DeviceSerializer.import_data(read_data)
+        self.list.addItem(device.name)
+        self.gui.devices.append(device)
 
     def onExport(self):
         device = self.gui.devices[self.list.currentRow() + 1]
@@ -52,7 +52,8 @@ class ManageDialog(QDialog, Ui_Dialog):
         if file_name:
             file_name = verify_ext(file_name, 'sbm')
             with open(file_name, 'w') as f:
-                f.write(json.dumps(device.mapping))
+                device_string = DeviceSerializer.export_data(device)
+                f.write(device_string)
 
     def onFinished(self):
         self.gui.updateDevices()

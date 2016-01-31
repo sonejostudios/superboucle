@@ -21,10 +21,10 @@ from add_port import AddPortDialog
 from device import Device
 import struct
 from queue import Queue, Empty
-import pickle
 from os.path import expanduser, dirname
 import numpy as np
 import soundfile as sf
+from serializer import DeviceSerializer
 
 BAR_START_TICK = 0.0
 BEATS_PER_BAR = 4.0
@@ -96,14 +96,7 @@ class Gui(QMainWindow, Ui_MainWindow):
 
         # Load devices
         self.deviceGroup = QActionGroup(self.menuDevice)
-        self.devices = []
-        device_settings = QSettings('superboucle', 'devices')
-        if ((device_settings.contains('devices')
-             and device_settings.value('devices'))):
-            for raw_device in device_settings.value('devices'):
-                self.devices.append(Device(pickle.loads(raw_device)))
-        else:
-            self.devices.append(Device({'name': 'No Device', }))
+        self.devices = DeviceSerializer.load_data()
         self.updateDevices()
         self.deviceGroup.triggered.connect(self.onDeviceSelect)
 
@@ -223,10 +216,7 @@ class Gui(QMainWindow, Ui_MainWindow):
         self.setEnabled(True)
 
     def closeEvent(self, event):
-        device_settings = QSettings('superboucle', 'devices')
-        device_settings.setValue('devices',
-                                 [pickle.dumps(x.mapping)
-                                  for x in self.devices])
+        DeviceSerializer.save_data(self.devices)
         self.settings.setValue('playlist', self.playlist)
         self.settings.setValue('paths_used', self.paths_used)
         self.settings.setValue('auto_connect', self.auto_connect)
