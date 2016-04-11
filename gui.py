@@ -209,6 +209,9 @@ class Gui(QMainWindow, Ui_MainWindow):
         self.update()
         self.songLoad.emit()
 
+        timer = QTimer()
+        timer.singleShot(1000,self.send_clip_state_feedback)
+
     def openSongFromDisk(self, file_name):
         self._jack_client.transport_stop()
         self._jack_client.transport_locate(0)
@@ -501,6 +504,25 @@ class Gui(QMainWindow, Ui_MainWindow):
             self.showFullScreen()
         self.show()
 
+    def send_clip_state_feedback(self):
+        for x in range(self.song.width):
+            for y in range(self.song.height):
+                clip = self.song.clips_matrix[x][y]
+                state = clip.state if clip else None
+                self._update_clip_state(x, y, state)
+
+    def _update_clip_state(self, x, y, state):
+        clip = self.song.clips_matrix[x][y]
+        if clip:
+            self.btn_matrix[x][y].setColor(state)
+        try:
+            self.queue_out.put(self.device.generateNote(x, y, state))
+        except IndexError:
+            # print("No cell associated to %s x %s"
+            # % (clp.x, clp.y))
+            pass
+        self.state_matrix[x][y] = state
+
     def update(self):
         for x in range(len(self.song.clips_matrix)):
             line = self.song.clips_matrix[x]
@@ -511,17 +533,7 @@ class Gui(QMainWindow, Ui_MainWindow):
                 else:
                     state = clp.state
                 if state != self.state_matrix[x][y]:
-                    if clp:
-                        self.btn_matrix[x][y].setColor(state)
-                    try:
-                        self.queue_out.put(self.device.generateNote(x,
-                                                                    y,
-                                                                    state))
-                    except IndexError:
-                        # print("No cell associated to %s x %s"
-                        # % (clp.x, clp.y))
-                        pass
-                self.state_matrix[x][y] = state
+                    self._update_clip_state(x, y, state)
 
     def redraw(self):
         self.state_matrix = [[-1 for x in range(self.song.height)]
