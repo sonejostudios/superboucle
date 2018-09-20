@@ -284,7 +284,7 @@ class Song():
 
             for member in self.data:
                 buffer = BytesIO()
-                sf.write(self.data[member], buffer,
+                sf.write(buffer, self.data[member],
                          self.samplerate[member],
                          subtype=sf.default_subtype('WAV'),
                          format='WAV')
@@ -322,7 +322,7 @@ def load_song_from_file(file):
                 wav_res = zip.open(member)
                 buffer.write(wav_res.read())
                 buffer.seek(0)
-                data, samplerate = sf.read(buffer, dtype=np.float32)
+                data, samplerate = sf.read(buffer, dtype=np.float32, always_2d=True)
                 res.data[member] = data
                 res.samplerate[member] = samplerate
 
