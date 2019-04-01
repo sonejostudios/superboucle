@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'device_manager_ui.ui'
+# Form implementation generated from reading ui file 'manage_ui.ui'
 #
-# Created: Mon Mar 14 12:27:23 2016
+# Created: Mon Mar 21 14:08:54 2016
 #      by: PyQt5 UI code generator 5.2.1
 #
 # WARNING! All changes made in this file will be lost!
